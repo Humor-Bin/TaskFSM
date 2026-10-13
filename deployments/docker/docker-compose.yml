@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskfsm
+      POSTGRES_USER: taskfsm
+      POSTGRES_PASSWORD: taskfsm
+    volumes:
+      - taskfsm_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskfsm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - taskfsm_redis:/data
+
+  taskfsm:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://taskfsm:taskfsm@postgres:5432/taskfsm
+      TASKFSM_DEMO_SEED: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  taskfsm_pg:
+  taskfsm_redis:
