@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TaskFSM · AI Agent 协作任务状态机</title>
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">◇</div>
+        <div><strong>TaskFSM</strong><span>v0.1</span><small>AI Agent 协作任务状态机</small></div>
+      </div>
+      <nav class="main-nav" aria-label="主导航">
+        <button data-view="board">▦ 看板</button>
+        <button class="active" data-view="runtime">⌘ 运行视图</button>
+        <button data-view="tasks">▣ 任务</button>
+        <button data-view="agents">♧ Agent</button>
+        <button data-view="timeline">◴ 时间线</button>
+        <button data-view="system">⚙ 系统</button>
+      </nav>
+      <div class="toolbar"><span id="connectionState" class="chip">演示模式</span>
+        <label class="search">⌕<input id="globalSearch" placeholder="搜索任务、Agent、关键词…" /></label>
+        <button class="icon-btn" aria-label="通知">♢<span class="badge">3</span></button>
+        <button class="icon-btn" aria-label="主题">☼</button>
+        <div class="human-avatar">李</div>
+      </div>
+    </header>
+
+    <main>
+      <section class="summary-grid" id="summaryGrid" aria-label="系统概览"></section>
+
+      <section class="workspace-grid">
+        <aside class="panel pipeline-panel">
+          <div class="panel-title"><div><h2>状态流水线</h2><p>任务生命周期实时分布</p></div><button class="ghost">⋮</button></div>
+          <div id="pipeline" class="pipeline"></div>
+        </aside>
+
+        <section class="center-stack">
+          <section class="panel topology-panel">
+            <div class="panel-title topology-heading">
+              <div><h2>Agent 运行拓扑图</h2><p>实时展示 Agent、任务和依赖关系的运行状态</p></div>
+              <div class="panel-actions"><button class="chip active">◉ 实时</button><button class="chip">近 1 小时</button><button class="chip">⛶ 全屏</button></div>
+            </div>
+            <div id="topology" class="topology" aria-label="Agent 运行拓扑"></div>
+          </section>
+
+          <div class="lower-grid">
+            <section class="panel compact-panel">
+              <div class="panel-title"><div><h2>运行中任务 <span id="runningCount" class="count"></span></h2></div><button class="ghost">⌃</button></div>
+              <div id="runningTasks" class="running-tasks"></div>
+            </section>
+            <section class="panel compact-panel">
+              <div class="panel-title"><div><h2>✣ 实时事件流</h2></div><div class="panel-actions"><button class="chip">全部⌄</button><label class="check"><input type="checkbox" checked /> 只看重要事件</label></div></div>
+              <div id="eventFeed" class="event-feed"></div>
+            </section>
+          </div>
+        </section>
+
+        <aside id="taskDetail" class="panel detail-panel" aria-label="任务详情"></aside>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./src/app.mjs"></script>
+</body>
+</html>
