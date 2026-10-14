@@ -23,7 +23,7 @@
       </nav>
       <div class="toolbar"><span id="connectionState" class="chip">演示模式</span>
         <button id="codexSync" class="chip" type="button" title="扫描本机 Codex 原生 Session">↻ 同步 Codex</button>
-        <label class="search">⌕<input id="globalSearch" placeholder="搜索任务、Session、Agent…" /></label>
+        <label class="search">⌕<input id="globalSearch" placeholder="搜索任务、Session、工作区、Agent…" /></label>
         <button class="icon-btn" aria-label="通知">♢<span class="badge">3</span></button>
         <button class="icon-btn" aria-label="主题">☼</button>
         <div class="human-avatar">李</div>
@@ -35,14 +35,16 @@
 
       <section class="workspace-grid">
         <aside class="panel pipeline-panel">
-          <div class="panel-title"><div><h2>状态流水线</h2><p>Observed 与 Managed 任务统一投影</p></div><button class="ghost">⋮</button></div>
+          <div class="panel-title"><div><h2>Agent Runtime</h2><p>Codex 原生 Session 的真实活动状态</p></div><button class="ghost">⋮</button></div>
+          <div id="runtimePipeline" class="pipeline"></div>
+          <div class="panel-title"><div><h2>Managed FSM</h2><p>仅统计由 TaskFSM 拥有生命周期的任务</p></div></div>
           <div id="pipeline" class="pipeline"></div>
         </aside>
 
         <section class="center-stack">
           <section class="panel topology-panel">
             <div class="panel-title topology-heading">
-              <div><h2>Agent 运行拓扑图</h2><p>既能观察 Codex 原生 Session，也能展示 TaskFSM 受管 Run</p></div>
+              <div><h2>Agent 运行关系图</h2><p>优先展示正在活动或等待输入的 Session；历史会话不再占满运行区</p></div>
               <div class="panel-actions"><button class="chip active">◉ 实时</button><button class="chip">Observed + Managed</button></div>
             </div>
             <div id="topology" class="topology" aria-label="Agent 运行拓扑"></div>
@@ -50,7 +52,7 @@
 
           <div class="lower-grid">
             <section class="panel compact-panel">
-              <div class="panel-title"><div><h2>活跃任务 <span id="runningCount" class="count"></span></h2></div><button class="ghost">⌃</button></div>
+              <div class="panel-title"><div><h2>当前活动 <span id="runningCount" class="count"></span></h2></div><button class="ghost">⌃</button></div>
               <div id="runningTasks" class="running-tasks"></div>
             </section>
             <section class="panel compact-panel">
