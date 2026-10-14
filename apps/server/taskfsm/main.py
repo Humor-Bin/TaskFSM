@@ -212,6 +212,7 @@ def create_app(database_url: str | None = None, testing: bool = False):
         return {
             'sessions_root': str(codex_observer.sessions_root),
             'sessions_root_exists': codex_observer.sessions_root.exists(),
+            'active_window_seconds': codex_observer.active_window_seconds,
             'command': codex_runtime.command,
             'command_available': codex_runtime.available,
             'managed_enabled': os.getenv('TASKFSM_CODEX_MANAGED', '0') == '1',
@@ -240,19 +241,29 @@ def create_app(database_url: str | None = None, testing: bool = False):
     @app.get('/api/dashboard')
     def dashboard():
         tasks = service.list_tasks()
-        summary = {key: 0 for key in ['backlog','todo','ready','in_progress','review','blocked','done']}
+        managed_summary = {key: 0 for key in ['backlog','todo','ready','in_progress','review','blocked','done']}
         source_summary = {'observed': 0, 'managed': 0}
         for task in tasks:
-            summary[task.status] = summary.get(task.status, 0) + 1
             source_summary[task.control_mode] = source_summary.get(task.control_mode, 0) + 1
+            if task.control_mode == 'managed':
+                managed_summary[task.status] = managed_summary.get(task.status, 0) + 1
         with sessions() as s:
             agents = list(s.scalars(select(Agent).order_by(Agent.name)))
             leases = list(s.scalars(select(Lease).where(Lease.active.is_(True))))
-            runs = list(s.scalars(select(Run).order_by(Run.started_at.desc()).limit(100)))
+            runs = list(s.scalars(select(Run).order_by(Run.started_at.desc()).limit(200)))
             artifacts = list(s.scalars(select(Artifact).order_by(Artifact.created_at.desc()).limit(50)))
             reviews = list(s.scalars(select(Review).order_by(Review.created_at.desc()).limit(50)))
+        observed_runtime_summary = {'active': 0, 'waiting': 0, 'ended': 0, 'error': 0}
+        for run in runs:
+            if run.control_mode != 'observed':
+                continue
+            key = {'running': 'active', 'waiting': 'waiting', 'ended': 'ended', 'error': 'error'}.get(run.status, 'ended')
+            observed_runtime_summary[key] = observed_runtime_summary.get(key, 0) + 1
         return {
-            'summary': summary, 'source_summary': source_summary,
+            'summary': managed_summary,
+            'managed_summary': managed_summary,
+            'observed_runtime_summary': observed_runtime_summary,
+            'source_summary': source_summary,
             'tasks': [task_dict(t) for t in tasks], 'agents': [agent_dict(a) for a in agents],
             'active_leases': [{'id': l.id, 'task_id': l.task_id, 'agent_id': l.agent_id, 'run_id': l.run_id, 'expires_at': dt(l.expires_at)} for l in leases],
             'runs': [run_dict(r) for r in runs],
