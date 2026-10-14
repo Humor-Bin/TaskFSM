@@ -6,10 +6,10 @@ const pipelineOrder=['任务池','待办','就绪','进行中','待审查','已�
 const runtimeLabel={active:'活跃',running:'活跃',waiting:'等待输入',ended:'已结束',error:'异常',failed:'异常'};
 
 const demoTasks=[
-  {id:'CODEX-ACTIVE',title:'修复数据导入字段映射错误',taskIntent:'修复数据导入字段映射错误，并运行测试验证',status:'进行中',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'正在执行命令：pytest tests/test_importer.py -q',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-active',plan:['阅读导入代码','修复字段映射','运行测试'],runStatus:'running',runtimeStatus:'active',workspace:'/home/user/Project/DataLabeling',workspaceName:'DataLabeling',gitBranch:'main',runId:'run_observed_1'},
-  {id:'CODEX-HISTORY',title:'整理旧代码',taskIntent:'整理旧代码',status:'已完成',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'本轮已完成，等待下一步',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-ended',plan:[],runStatus:'ended',runtimeStatus:'ended',workspace:'/home/user/Project/Legacy',workspaceName:'Legacy',gitBranch:'main',runId:'run_observed_2'},
-  {id:'TASK-103',title:'构建知识库索引',taskIntent:'构建知识库索引',status:'进行中',assignee:'TaskFSM Codex',assigneeType:'agent',progress:72,dependencies:[],priority:'高',currentAction:'正在运行测试',artifacts:['git://abc123'],source:'taskfsm',controlMode:'managed',runId:'run_83f21a7e',runStatus:'running',runtimeStatus:'active',workspace:'/repo/taskfsm',workspaceName:'taskfsm',gitBranch:'feature/index',plan:['分析索引结构','实现索引','运行验证']},
-  {id:'TASK-104',title:'设计检索策略',taskIntent:'设计检索策略',status:'待审查',assignee:'Builder',assigneeType:'agent',progress:88,dependencies:['TASK-103'],priority:'高',currentAction:'等待审查',artifacts:['retrieval-spec.md'],source:'taskfsm',controlMode:'managed',runStatus:'awaiting_review',runtimeStatus:'waiting'},
+  {id:'CODEX-ACTIVE',title:'修复数据导入字段映射错误',taskIntent:'修复数据导入字段映射错误，并运行测试验证',status:'进行中',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'正在执行命令：pytest tests/test_importer.py -q',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-active',plan:['阅读导入代码','修复字段映射','运行测试'],runStatus:'running',runtimeStatus:'active',workspace:'/home/user/Project/DataLabeling',workspaceName:'DataLabeling',gitBranch:'main',runId:'run_observed_1',lastEventTs:Date.now()},
+  {id:'CODEX-HISTORY',title:'整理旧代码',taskIntent:'整理旧代码',status:'已完成',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'本轮已完成，等待下一步',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-ended',plan:[],runStatus:'ended',runtimeStatus:'ended',workspace:'/home/user/Project/Legacy',workspaceName:'Legacy',gitBranch:'main',runId:'run_observed_2',lastEventTs:Date.now()-3600000},
+  {id:'TASK-103',title:'构建知识库索引',taskIntent:'构建知识库索引',status:'进行中',assignee:'TaskFSM Codex',assigneeType:'agent',progress:72,dependencies:[],priority:'高',currentAction:'正在运行测试',artifacts:['git://abc123'],source:'taskfsm',controlMode:'managed',runId:'run_83f21a7e',runStatus:'running',runtimeStatus:'active',workspace:'/repo/taskfsm',workspaceName:'taskfsm',gitBranch:'feature/index',plan:['分析索引结构','实现索引','运行验证'],lastEventTs:Date.now()},
+  {id:'TASK-104',title:'设计检索策略',taskIntent:'设计检索策略',status:'待审查',assignee:'Builder',assigneeType:'agent',progress:88,dependencies:['TASK-103'],priority:'高',currentAction:'等待审查',artifacts:['retrieval-spec.md'],source:'taskfsm',controlMode:'managed',runStatus:'awaiting_review',runtimeStatus:'waiting',lastEventTs:Date.now()},
 ];
 let tasks=structuredClone(demoTasks);
 let events=[createEvent({actor:'Codex Observer',actorType:'agent',taskId:'CODEX-ACTIVE',text:'发现活跃 Codex Session'}),createEvent({actor:'TaskFSM Codex',actorType:'agent',taskId:'TASK-103',text:'正在运行测试'})];
@@ -22,13 +22,16 @@ let liveMode=false;
 let paused=false;
 
 const $=(selector)=>document.querySelector(selector);
-const escapeHtml=(value='')=>String(value).replace(/[&<>"']/g,(m)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const escapeHtml=(value='')=>String(value).replace(/[&<>"']/g,(m)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]));
 const selectedTask=()=>tasks.find((task)=>task.id===selectedTaskId)||tasks[0];
 const avatar=(task)=>`<span class="avatar actor-${task.assigneeType}">${task.assigneeType==='agent'?'AI':escapeHtml(task.assignee?.slice(0,1)||'人')}</span>`;
 const pill=(status)=>`<span class="status ${stateClass[status]||''}">${status}</span>`;
 const modePill=(task)=>`<span class="chip ${task.controlMode==='observed'?'':'active'}">${task.controlMode==='observed'?'◎ 观察':'◆ 受管'}</span>`;
 const runtimePill=(status)=>`<span class="status ${status==='error'?'blocked':status==='ended'?'done':status==='waiting'?'review':'running'}">${runtimeLabel[status]||status||'未知'}</span>`;
 const bar=(value=0)=>`<span class="progress"><i style="width:${Math.max(0,Math.min(100,value))}%"></i></span>`;
+const isObservedLive=(task)=>task.controlMode==='observed'&&['active','running','waiting','error'].includes(task.runtimeStatus);
+const isManagedLive=(task)=>task.controlMode==='managed'&&['进行中','待审查','已阻塞'].includes(task.status);
+const recentObserved=(limit=6)=>tasks.filter((t)=>t.controlMode==='observed'&&t.runtimeStatus==='ended').sort((a,b)=>(b.lastEventTs||0)-(a.lastEventTs||0)).slice(0,limit);
 
 function computeObservedSummary(){
   const result={active:0,waiting:0,ended:0,error:0};
@@ -40,7 +43,7 @@ function computeManagedSummary(){return summarizeTasks(tasks.filter((t)=>t.contr
 function renderSummary(){
   const observed=observedRuntimeSummary||computeObservedSummary();
   const managed=managedSummary||computeManagedSummary();
-  const activeAgentNames=new Set(tasks.filter((t)=>(t.controlMode==='observed'&&['active','running','waiting'].includes(t.runtimeStatus))||(t.controlMode==='managed'&&['进行中','待审查'].includes(t.status))).map((t)=>t.assignee).filter(Boolean));
+  const activeAgentNames=new Set(tasks.filter((t)=>isObservedLive(t)||(t.controlMode==='managed'&&['进行中','待审查'].includes(t.status))).map((t)=>t.assignee).filter(Boolean));
   const managedTotal=Object.values(managed).reduce((sum,value)=>sum+Number(value||0),0);
   const cards=[['🤖','活跃 Agent',activeAgentNames.size],['◎','活跃 Session',observed.active||0],['?','等待输入',observed.waiting||0],['◌','历史 Session',observed.ended||0],['◆','受管任务',managedTotal]];
   $('#summaryGrid').innerHTML=cards.map(([icon,label,value])=>`<article class="metric-card"><span class="metric-icon">${icon}</span><div><label>${label}</label><strong>${value}</strong><small>实时统计</small></div></article>`).join('')+`<article class="metric-card wide-metric"><div><label>人类可读运行视图</label><small>任务意图 → 当前活动 → Session / Workspace → Agent Plan</small></div><div class="mini-stat"><span>异常</span><strong>${observed.error||0}</strong></div><div class="mini-stat"><span>数据源</span><strong>${liveMode?'实时':'演示'}</strong></div></article>`;
@@ -54,24 +57,32 @@ function renderPipeline(){
   $('#pipeline').innerHTML=pipelineOrder.map((label)=>{const key=Object.keys(stateLabel).find((item)=>stateLabel[item]===label);const count=managed[key]??managed[label]??0;return `<div class="pipeline-item ${label==='进行中'?'active':''}"><span class="pipe-dot"></span><strong><span>${label}</span><b>${count}</b></strong><small>TaskFSM 权威状态</small></div>`;}).join('');
 }
 
-function taskNode(task,index){
+function taskNode(task,index,history=false){
   const pos=[[32,15],[62,16],[32,43],[62,45],[32,70],[62,70]][index%6];
   const status=task.controlMode==='observed'?runtimePill(task.runtimeStatus):pill(task.status);
-  return `<button class="topo-node task ${task.id===selectedTaskId?'selected':''}" data-task="${task.id}" style="left:${pos[0]}%;top:${pos[1]}%"><small>${task.controlMode==='observed'?'Codex Session':'TaskFSM Task'} · ${escapeHtml(task.workspaceName||task.id)}</small><strong>${escapeHtml(task.taskIntent||task.title)}</strong><div class="node-foot">${status}${modePill(task)}</div></button>`;
+  return `<button class="topo-node task ${task.id===selectedTaskId?'selected':''} ${history?'history-node':''}" data-task="${task.id}" style="left:${pos[0]}%;top:${pos[1]}%"><small>${history?'最近会话':'Codex Session'} · ${escapeHtml(task.workspaceName||task.id)}</small><strong>${escapeHtml(task.taskIntent||task.title)}</strong><div class="node-foot">${status}${modePill(task)}</div></button>`;
 }
 function renderTopology(){
-  const visible=tasks.filter((t)=>t.controlMode==='observed'?['active','running','waiting','error'].includes(t.runtimeStatus):['进行中','待审查','已阻塞'].includes(t.status)).slice(0,6);
+  const activeVisible=tasks.filter((t)=>isObservedLive(t)||isManagedLive(t)).slice(0,6);
+  const history=recentObserved(6);
+  const showingHistory=activeVisible.length===0&&history.length>0;
+  const visible=showingHistory?history:activeVisible;
   const agents=[...new Set(visible.map((t)=>t.assignee).filter(Boolean))].slice(0,3);
-  const edges=`<svg viewBox="0 0 1000 480" preserveAspectRatio="none"><path class="edge active" d="M150 100 C250 100 260 100 335 110"/><path class="edge active" d="M150 225 C260 225 260 230 335 235"/><path class="edge warning" d="M520 120 C600 120 590 120 650 120"/></svg>`;
-  const empty=visible.length?'':'<div class="empty" style="padding:48px">当前没有活跃 Session 或受管任务</div>';
-  $('#topology').innerHTML=edges+agents.map((name,i)=>`<div class="topo-node agent" style="left:7%;top:${18+i*27}%"><div class="agent-line"><span class="avatar actor-agent">AI</span><div><strong>${escapeHtml(name)}</strong><small>Codex / Agent</small></div></div><span class="heartbeat">● 已连接</span></div>`).join('')+visible.map(taskNode).join('')+`<div class="topo-node service" style="left:86%;top:35%"><strong>TaskFSM</strong><small>Observe · FSM · Runtime</small></div>`+empty;
+  const edges=showingHistory?'':`<svg viewBox="0 0 1000 480" preserveAspectRatio="none"><path class="edge active" d="M150 100 C250 100 260 100 335 110"/><path class="edge active" d="M150 225 C260 225 260 230 335 235"/><path class="edge warning" d="M520 120 C600 120 590 120 650 120"/></svg>`;
+  const empty=visible.length?'':'<div class="empty" style="padding:48px">暂无 Session 数据。启动 Codex 或点击“同步 Codex”后会自动出现。</div>';
+  const banner=showingHistory?'<div class="empty" style="padding:14px 20px;text-align:left">当前没有活跃 Session，下面展示最近历史会话；这些条目不会被当作正在执行。</div>':'';
+  $('#topology').innerHTML=edges+agents.map((name,i)=>`<div class="topo-node agent" style="left:7%;top:${18+i*27}%"><div class="agent-line"><span class="avatar actor-agent">AI</span><div><strong>${escapeHtml(name)}</strong><small>${showingHistory?'最近历史':'Codex / Agent'}</small></div></div><span class="heartbeat">${showingHistory?'○ 历史':'● 已连接'}</span></div>`).join('')+visible.map((task,index)=>taskNode(task,index,showingHistory)).join('')+`<div class="topo-node service" style="left:86%;top:35%"><strong>TaskFSM</strong><small>Observe · FSM · Runtime</small></div>`+banner+empty;
   document.querySelectorAll('[data-task]').forEach((el)=>el.addEventListener('click',()=>selectTask(el.dataset.task)));
 }
 
 function renderRunningTasks(){
-  const running=tasks.filter((t)=>t.controlMode==='observed'?['active','running','waiting','error'].includes(t.runtimeStatus):['进行中','待审查','已阻塞'].includes(t.status)).slice(0,10);
-  $('#runningCount').textContent=`(${running.length})`;
-  $('#runningTasks').innerHTML=`<div class="task-row head"><span>当前任务</span><span>工作区 / Agent</span><span>模式</span><span>状态</span></div>`+running.map((t)=>`<button class="task-row ${t.id===selectedTaskId?'selected':''}" data-row-task="${t.id}"><span><b>${escapeHtml(t.taskIntent||t.title)}</b><small>${escapeHtml(t.currentAction||'暂无可见活动')}</small></span><span class="assignee"><span>${escapeHtml(t.workspaceName||'—')}</span><small>${escapeHtml(t.assignee||'')}</small></span><span>${modePill(t)}</span><span>${t.controlMode==='observed'?runtimePill(t.runtimeStatus):pill(t.status)}</span></button>`).join('');
+  const active=tasks.filter((t)=>isObservedLive(t)||isManagedLive(t)).slice(0,10);
+  const recent=recentObserved(10);
+  const showingHistory=active.length===0&&recent.length>0;
+  const running=showingHistory?recent:active;
+  $('#runningCount').textContent=showingHistory?`(最近会话 ${running.length})`:`(${running.length})`;
+  const caption=showingHistory?'<div class="empty" style="padding:8px 12px;text-align:left">当前没有正在执行的任务，以下为最近历史会话。</div>':'';
+  $('#runningTasks').innerHTML=caption+`<div class="task-row head"><span>${showingHistory?'最近任务':'当前任务'}</span><span>工作区 / Agent</span><span>模式</span><span>状态</span></div>`+running.map((t)=>`<button class="task-row ${t.id===selectedTaskId?'selected':''}" data-row-task="${t.id}"><span><b>${escapeHtml(t.taskIntent||t.title)}</b><small>${escapeHtml(t.currentAction||'暂无可见活动')}</small></span><span class="assignee"><span>${escapeHtml(t.workspaceName||'—')}</span><small>${escapeHtml(t.assignee||'')}</small></span><span>${modePill(t)}</span><span>${t.controlMode==='observed'?runtimePill(t.runtimeStatus):pill(t.status)}</span></button>`).join('');
   document.querySelectorAll('[data-row-task]').forEach((el)=>el.addEventListener('click',()=>selectTask(el.dataset.rowTask)));
 }
 
@@ -138,11 +149,13 @@ function mapDashboard(data){
   tasks=(data.tasks||[]).map((t)=>{
     const agent=agents.get(t.assignee_id);const lease=leases.get(t.id);const run=runs.get(t.id);const metadata=t.source_metadata||{};
     const rawRuntime=metadata.runtime_status||run?.status||'';
-    return {id:t.id,title:t.title,taskIntent:metadata.task_intent||t.title,status:stateLabel[t.status]||t.status,assignee:agent?.name||(t.assignee_type==='human'?'Alice':'未分配'),assigneeId:t.assignee_id,assigneeType:t.assignee_type||'human',progress:t.progress||0,dependencies:t.dependency_ids||[],priority:t.priority==='high'?'高':t.priority==='low'?'低':'中',currentAction:t.current_action||run?.current_event?.message||'',leaseSeconds:lease?.expires_at?Math.max(0,Math.floor((new Date(lease.expires_at)-Date.now())/1000)):0,heartbeatSeconds:agent?Math.max(0,Math.floor((Date.now()-new Date(agent.last_heartbeat_at))/1000)):0,runId:run?.id||'—',runStatus:run?.status||'—',runtimeStatus:rawRuntime==='running'?'active':rawRuntime,workspace:run?.workspace||metadata.cwd||'',workspaceName:metadata.workspace_name||(run?.workspace?run.workspace.split('/').filter(Boolean).at(-1):''),gitBranch:metadata.git_branch||'',externalId:t.external_id||run?.external_session_id||'',source:t.source||'taskfsm',controlMode:t.control_mode||'managed',plan:run?.plan_snapshot||[],lastEventAt:run?.last_event_at?new Date(run.last_event_at).toLocaleString('zh-CN',{hour12:false}):'',artifacts:artifactMap.get(t.id)||[]};
+    const lastEventTs=run?.last_event_at?new Date(run.last_event_at).getTime():0;
+    return {id:t.id,title:t.title,taskIntent:metadata.task_intent||t.title,status:stateLabel[t.status]||t.status,assignee:agent?.name||(t.assignee_type==='human'?'Alice':'未分配'),assigneeId:t.assignee_id,assigneeType:t.assignee_type||'human',progress:t.progress||0,dependencies:t.dependency_ids||[],priority:t.priority==='high'?'高':t.priority==='low'?'低':'中',currentAction:t.current_action||run?.current_event?.message||'',leaseSeconds:lease?.expires_at?Math.max(0,Math.floor((new Date(lease.expires_at)-Date.now())/1000)):0,heartbeatSeconds:agent?Math.max(0,Math.floor((Date.now()-new Date(agent.last_heartbeat_at))/1000)):0,runId:run?.id||'—',runStatus:run?.status||'—',runtimeStatus:rawRuntime==='running'?'active':rawRuntime,workspace:run?.workspace||metadata.cwd||'',workspaceName:metadata.workspace_name||(run?.workspace?run.workspace.split('/').filter(Boolean).at(-1):''),gitBranch:metadata.git_branch||'',externalId:t.external_id||run?.external_session_id||'',source:t.source||'taskfsm',controlMode:t.control_mode||'managed',plan:run?.plan_snapshot||[],lastEventTs,lastEventAt:lastEventTs?new Date(lastEventTs).toLocaleString('zh-CN',{hour12:false}):'',artifacts:artifactMap.get(t.id)||[]};
   });
   events=(data.events||[]).slice().reverse().map((e)=>({id:`evt-${e.id}`,time:new Date(e.created_at).toLocaleTimeString('zh-CN',{hour12:false}),actor:e.actor_id,actorType:e.actor_type,taskId:e.payload?.task_id||e.entity_id,runId:e.entity_type==='run'?e.entity_id:null,severity:e.event_type.includes('expired')||e.event_type.includes('failed')?'error':e.event_type.includes('completed')?'success':'info',text:e.payload?.message||e.payload?.task_intent||e.event_type.replaceAll('.',' · ')}));
-  const preferred=tasks.find((t)=>t.controlMode==='observed'&&['active','waiting','error'].includes(t.runtimeStatus))||tasks.find((t)=>t.controlMode==='managed'&&['进行中','待审查','已阻塞'].includes(t.status))||tasks[0];
-  if(!tasks.some((t)=>t.id===selectedTaskId))selectedTaskId=preferred?.id||selectedTaskId;
+  const latestHistorical=recentObserved(1)[0];
+  const preferred=tasks.find((t)=>isObservedLive(t))||tasks.find((t)=>isManagedLive(t))||latestHistorical||tasks[0];
+  if(!tasks.some((t)=>t.id===selectedTaskId)||(!isObservedLive(tasks.find((t)=>t.id===selectedTaskId)||{})&&!isManagedLive(tasks.find((t)=>t.id===selectedTaskId)||{})&&preferred))selectedTaskId=preferred?.id||selectedTaskId;
 }
 async function refreshFromApi(){const response=await fetch('/api/dashboard',{cache:'no-store'});if(!response.ok)throw new Error('API 不可用');mapDashboard(await response.json());liveMode=true;$('#connectionState').textContent='● 实时连接';$('#connectionState').classList.add('active');renderAll();}
 function connectEvents(){const source=new EventSource('/api/events/stream');source.onmessage=()=>refreshFromApi().catch(()=>{});source.onerror=()=>{$('#connectionState').textContent='● 正在重连';};}
