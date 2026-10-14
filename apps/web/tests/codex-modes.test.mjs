@@ -40,3 +40,11 @@ test('Observed 详情优先展示人类可读任务、工作区、会话和原�
   }
   assert.doesNotMatch(app, /当前动作<\/dt><dd>\$\{escapeHtml\(task\.currentAction\|\|'—'\)\}/);
 });
+
+test('没有活跃 Session 时仍展示最近历史会话而不是空白画布', async () => {
+  const app = await read('../src/app.mjs');
+  assert.match(app, /最近会话/);
+  assert.match(app, /recentObserved/);
+  assert.match(app, /showingHistory/);
+  assert.match(app, /最近历史会话/);
+});
