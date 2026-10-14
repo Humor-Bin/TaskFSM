@@ -14,6 +14,7 @@ from sqlalchemy import select
 from taskfsm.domain.models import Agent, Artifact, Base, Lease, Review, Run, Task
 from taskfsm.domain.service import DomainError, TaskFSMService
 from taskfsm.infrastructure.db import make_engine, make_session_factory
+from taskfsm.integrations.codex import CodexObserver, CodexRuntimeManager
 from taskfsm.realtime.broker import InMemoryBroker
 
 
@@ -69,6 +70,16 @@ class CompleteIn(BaseModel):
     actor: str
 
 
+class CodexStartIn(BaseModel):
+    workspace: str
+    prompt: str | None = None
+    lease_seconds: int = 1800
+
+
+class CodexSyncIn(BaseModel):
+    limit: int = 200
+
+
 def dt(value):
     return value.isoformat() if value else None
 
@@ -79,15 +90,26 @@ def task_dict(task: Task):
         'priority': task.priority, 'assignee_type': task.assignee_type, 'assignee_id': task.assignee_id,
         'required_capabilities': task.required_capabilities or [], 'dependency_ids': [d.id for d in task.dependencies],
         'progress': task.progress, 'current_action': task.current_action,
+        'source': task.source, 'control_mode': task.control_mode, 'external_id': task.external_id,
+        'source_metadata': task.source_metadata or {},
         'created_at': dt(task.created_at), 'updated_at': dt(task.updated_at),
     }
 
 
 def agent_dict(agent: Agent, include_token=False):
     data = {'id': agent.id, 'name': agent.name, 'kind': agent.kind, 'capabilities': agent.capabilities or [], 'last_heartbeat_at': dt(agent.last_heartbeat_at)}
-    if include_token and hasattr(agent, 'api_token'):
-        data['api_token'] = agent.api_token
+    if include_token and hasattr(agent, 'api_token'): data['api_token'] = agent.api_token
     return data
+
+
+def run_dict(run: Run):
+    return {
+        'id': run.id, 'task_id': run.task_id, 'agent_id': run.agent_id, 'status': run.status,
+        'source': run.source, 'control_mode': run.control_mode, 'external_session_id': run.external_session_id,
+        'workspace': run.workspace, 'pid': run.pid, 'plan_snapshot': run.plan_snapshot or [],
+        'current_event': run.current_event or {}, 'last_event_at': dt(run.last_event_at),
+        'started_at': dt(run.started_at), 'ended_at': dt(run.ended_at),
+    }
 
 
 def event_dict(event):
@@ -102,17 +124,21 @@ def create_app(database_url: str | None = None, testing: bool = False):
     sessions = make_session_factory(engine)
     broker = InMemoryBroker()
 
-    def sink(event):
-        broker.publish(event_dict(event))
+    def sink(event): broker.publish(event_dict(event))
 
     service = TaskFSMService(sessions, event_sink=sink)
+    codex_observer = CodexObserver(service)
+    codex_runtime = CodexRuntimeManager(service, command=os.getenv('TASKFSM_CODEX_COMMAND', 'codex'))
     if not testing and os.getenv('TASKFSM_DEMO_SEED', '0') == '1':
         from taskfsm.seed import seed_demo
         seed_demo(service)
-    app = FastAPI(title='TaskFSM API', version='0.2.0')
+
+    app = FastAPI(title='TaskFSM API', version='0.3.0')
     app.state.service = service
     app.state.sessions = sessions
     app.state.broker = broker
+    app.state.codex_observer = codex_observer
+    app.state.codex_runtime = codex_runtime
     app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
     @app.exception_handler(DomainError)
@@ -122,15 +148,13 @@ def create_app(database_url: str | None = None, testing: bool = False):
 
     def require_agent(agent_id: str, authorization: str | None):
         token = authorization.removeprefix('Bearer ').strip() if authorization and authorization.startswith('Bearer ') else None
-        if not service.authenticate_agent(agent_id, token):
-            raise HTTPException(status_code=401, detail='Agent 凭据无效')
+        if not service.authenticate_agent(agent_id, token): raise HTTPException(status_code=401, detail='Agent 凭据无效')
 
     @app.get('/health')
     def health(): return {'status': 'ok'}
 
     @app.post('/api/tasks')
-    def create_task(payload: TaskCreate):
-        return task_dict(service.create_task(**payload.model_dump()))
+    def create_task(payload: TaskCreate): return task_dict(service.create_task(**payload.model_dump()))
 
     @app.get('/api/tasks')
     def list_tasks(): return [task_dict(t) for t in service.list_tasks()]
@@ -153,7 +177,7 @@ def create_app(database_url: str | None = None, testing: bool = False):
     def claim(task_id: str, payload: ClaimIn, authorization: str | None = Header(default=None)):
         require_agent(payload.agent_id, authorization)
         result = service.claim_task(task_id, payload.agent_id, payload.lease_seconds)
-        return {'task': task_dict(result.task), 'lease': {'id': result.lease.id, 'agent_id': result.lease.agent_id, 'task_id': result.lease.task_id, 'run_id': result.lease.run_id, 'expires_at': dt(result.lease.expires_at)}, 'run': {'id': result.run.id, 'task_id': result.run.task_id, 'agent_id': result.run.agent_id, 'status': result.run.status}}
+        return {'task': task_dict(result.task), 'lease': {'id': result.lease.id, 'agent_id': result.lease.agent_id, 'task_id': result.lease.task_id, 'run_id': result.lease.run_id, 'expires_at': dt(result.lease.expires_at)}, 'run': run_dict(result.run)}
 
     @app.post('/api/leases/{lease_id}/heartbeat')
     def lease_heartbeat(lease_id: str, payload: LeaseHeartbeatIn, authorization: str | None = Header(default=None)):
@@ -183,6 +207,30 @@ def create_app(database_url: str | None = None, testing: bool = False):
     @app.post('/api/tasks/{task_id}/complete')
     def complete(task_id: str, payload: CompleteIn): return task_dict(service.complete_task(task_id, payload.actor))
 
+    @app.get('/api/integrations/codex/status')
+    def codex_status():
+        return {
+            'sessions_root': str(codex_observer.sessions_root),
+            'sessions_root_exists': codex_observer.sessions_root.exists(),
+            'command': codex_runtime.command,
+            'command_available': codex_runtime.available,
+            'managed_enabled': os.getenv('TASKFSM_CODEX_MANAGED', '0') == '1',
+            'active_run_ids': codex_runtime.active_run_ids(),
+        }
+
+    @app.post('/api/integrations/codex/sync')
+    def codex_sync(payload: CodexSyncIn): return codex_observer.sync(payload.limit)
+
+    @app.post('/api/tasks/{task_id}/codex/start')
+    def codex_start(task_id: str, payload: CodexStartIn):
+        result = codex_runtime.start(task_id, payload.workspace, payload.prompt, payload.lease_seconds)
+        return {'task': task_dict(result.task), 'run': run_dict(result.run), 'lease': {'id': result.lease.id, 'expires_at': dt(result.lease.expires_at)}}
+
+    @app.post('/api/runs/{run_id}/codex/stop')
+    def codex_stop(run_id: str):
+        if not codex_runtime.stop(run_id): raise HTTPException(status_code=404, detail='没有正在运行的本地 Codex 进程')
+        return {'stopping': True, 'run_id': run_id}
+
     @app.post('/api/internal/leases/sweep')
     def sweep(): return {'expired': service.sweep_expired_leases()}
 
@@ -193,22 +241,25 @@ def create_app(database_url: str | None = None, testing: bool = False):
     def dashboard():
         tasks = service.list_tasks()
         summary = {key: 0 for key in ['backlog','todo','ready','in_progress','review','blocked','done']}
-        for task in tasks: summary[task.status] = summary.get(task.status, 0) + 1
+        source_summary = {'observed': 0, 'managed': 0}
+        for task in tasks:
+            summary[task.status] = summary.get(task.status, 0) + 1
+            source_summary[task.control_mode] = source_summary.get(task.control_mode, 0) + 1
         with sessions() as s:
             agents = list(s.scalars(select(Agent).order_by(Agent.name)))
             leases = list(s.scalars(select(Lease).where(Lease.active.is_(True))))
-            runs = list(s.scalars(select(Run).order_by(Run.started_at.desc()).limit(50)))
+            runs = list(s.scalars(select(Run).order_by(Run.started_at.desc()).limit(100)))
             artifacts = list(s.scalars(select(Artifact).order_by(Artifact.created_at.desc()).limit(50)))
             reviews = list(s.scalars(select(Review).order_by(Review.created_at.desc()).limit(50)))
         return {
-            'summary': summary,
-            'tasks': [task_dict(t) for t in tasks],
-            'agents': [agent_dict(a) for a in agents],
+            'summary': summary, 'source_summary': source_summary,
+            'tasks': [task_dict(t) for t in tasks], 'agents': [agent_dict(a) for a in agents],
             'active_leases': [{'id': l.id, 'task_id': l.task_id, 'agent_id': l.agent_id, 'run_id': l.run_id, 'expires_at': dt(l.expires_at)} for l in leases],
-            'runs': [{'id': r.id, 'task_id': r.task_id, 'agent_id': r.agent_id, 'status': r.status, 'started_at': dt(r.started_at), 'ended_at': dt(r.ended_at)} for r in runs],
+            'runs': [run_dict(r) for r in runs],
             'artifacts': [{'id': a.id, 'task_id': a.task_id, 'run_id': a.run_id, 'type': a.type, 'uri': a.uri, 'created_by': a.created_by} for a in artifacts],
             'reviews': [{'id': r.id, 'task_id': r.task_id, 'reviewer': r.reviewer, 'decision': r.decision, 'reason': r.reason} for r in reviews],
             'events': [event_dict(e) for e in service.list_events(100)],
+            'integrations': {'codex': {'sessions_root': str(codex_observer.sessions_root), 'command_available': codex_runtime.available, 'managed_enabled': os.getenv('TASKFSM_CODEX_MANAGED', '0') == '1'}},
         }
 
     @app.get('/api/events/stream')
@@ -225,8 +276,7 @@ def create_app(database_url: str | None = None, testing: bool = False):
         return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control':'no-cache'})
 
     web_root = Path(__file__).resolve().parents[2] / 'web'
-    if web_root.exists():
-        app.mount('/', StaticFiles(directory=str(web_root), html=True), name='web')
+    if web_root.exists(): app.mount('/', StaticFiles(directory=str(web_root), html=True), name='web')
     return app
 
 
