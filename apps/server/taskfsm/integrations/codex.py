@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import logging
@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any
 
 from taskfsm.domain.service import DomainError, TaskFSMService
@@ -43,6 +44,15 @@ def _clean_plan(text: str) -> list[str]:
     return out
 
 
+def _human_title(text: str, limit: int = 80) -> str:
+    line = ' '.join(str(text or '').strip().split())
+    line = re.sub(r'^(请帮我|请你|麻烦你|麻烦|请)\s*', '', line)
+    line = line.rstrip('。！？!?；;,.， ')
+    if len(line) > limit:
+        line = line[: limit - 1].rstrip() + '…'
+    return line
+
+
 def _event_message(payload: dict[str, Any]) -> str:
     for key in ('message', 'text', 'summary', 'name'):
         value = payload.get(key)
@@ -50,10 +60,28 @@ def _event_message(payload: dict[str, Any]) -> str:
             return value.strip()
     item = payload.get('item')
     if isinstance(item, dict):
-        for key in ('text', 'message', 'name', 'type'):
+        for key in ('text', 'message', 'name'):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+    return ''
+
+
+def _item_activity(payload_type: str, item: dict[str, Any]) -> str:
+    item_type = str(item.get('type') or '').lower()
+    command = str(item.get('command') or item.get('cmd') or '').strip()
+    path = str(item.get('path') or item.get('file') or item.get('filename') or '').strip()
+    if item_type in {'command_execution', 'command', 'shell', 'shell_command'}:
+        if payload_type == 'item_started':
+            return f'正在执行命令：{command}' if command else '正在执行命令'
+        return f'命令执行完成：{command}' if command else '命令执行完成'
+    if item_type in {'file_change', 'file_write', 'patch', 'apply_patch'}:
+        if payload_type == 'item_started':
+            return f'正在修改文件：{path}' if path else '正在修改文件'
+        return f'文件修改完成：{path}' if path else '文件修改完成'
+    if item_type in {'web_search', 'search', 'code_search'}:
+        query = str(item.get('query') or item.get('text') or '').strip()
+        return f'正在搜索：{query}' if query else '正在搜索相关信息'
     return ''
 
 
@@ -64,6 +92,8 @@ class CodexSessionSnapshot:
     cwd: str
     source: str
     title: str
+    task_intent: str
+    workspace_name: str
     current_action: str
     status: str
     plan: list[str]
@@ -72,22 +102,18 @@ class CodexSessionSnapshot:
 
 
 class CodexRolloutParser:
-    """Parse the stable, user-visible subset of Codex rollout JSONL.
-
-    Unknown rows are intentionally ignored. This keeps TaskFSM tolerant of
-    Codex schema growth while preserving source JSON as metadata/events.
-    """
+    """Parse Codex rollout JSONL into a conservative human-readable snapshot."""
 
     def parse(self, path: str | Path) -> CodexSessionSnapshot:
         path = Path(path)
         session_id = path.stem.split('-')[-1]
         cwd = ''
         source = 'cli'
-        title = ''
+        task_intent = ''
         current_action = ''
         plan: list[str] = []
         last_event_at: datetime | None = None
-        waiting = False
+        status = 'running'
         metadata: dict[str, Any] = {'rollout_path': str(path)}
 
         with path.open('r', encoding='utf-8', errors='replace') as handle:
@@ -115,41 +141,62 @@ class CodexRolloutParser:
                 if row_type != 'event_msg':
                     continue
 
-                payload_type = payload.get('type')
+                payload_type = str(payload.get('type') or '')
                 if payload_type == 'user_message':
                     message = str(payload.get('message') or '').strip()
-                    if message and not title:
-                        title = message.splitlines()[0][:300]
-                    waiting = False
+                    if message and not task_intent:
+                        task_intent = ' '.join(message.split())
+                    status = 'running'
                     continue
                 if payload_type == 'agent_message':
                     message = str(payload.get('message') or '').strip()
                     if message:
-                        current_action = message[:300]
+                        current_action = ' '.join(message.split())[:300]
                     continue
                 if payload_type in {'request_user_input', 'user_input_requested'}:
-                    waiting = True
-                    current_action = '等待用户输入'
+                    status = 'waiting'
+                    current_action = '等待你的输入'
                     continue
-                item = payload.get('item')
-                if payload_type == 'item_completed' and isinstance(item, dict) and str(item.get('type')).lower() == 'plan':
+                if payload_type in {'turn_completed', 'task_completed', 'task_complete'}:
+                    status = 'ended'
+                    current_action = '本轮已完成，等待下一步'
+                    continue
+                if payload_type in {'error', 'turn_failed', 'task_failed'}:
+                    status = 'error'
+                    message = _event_message(payload)
+                    current_action = f'执行出现错误：{message}' if message else '执行出现错误'
+                    continue
+
+                item = payload.get('item') if isinstance(payload.get('item'), dict) else {}
+                if payload_type == 'item_completed' and str(item.get('type')).lower() == 'plan':
                     plan = _clean_plan(str(item.get('text') or ''))
+                    continue
+                activity = _item_activity(payload_type, item)
+                if activity:
+                    current_action = activity[:300]
                     continue
                 message = _event_message(payload)
                 if message:
-                    current_action = message[:300]
+                    current_action = ' '.join(message.split())[:300]
 
+        workspace_name = Path(cwd).name if cwd else ''
+        title = _human_title(task_intent)
+        if not title and plan:
+            title = _human_title(plan[0])
+        if not title and workspace_name:
+            title = f'{workspace_name} · Codex 会话'
         if not title:
-            title = f'Codex Session {session_id[:12]}'
+            title = f'Codex 会话 {session_id[:12]}'
         if not current_action:
-            current_action = '已发现 Codex 会话'
-        status = 'waiting' if waiting else 'running'
+            current_action = '会话已发现，暂无新的可见活动'
         return CodexSessionSnapshot(
             session_id=session_id,
             path=str(path),
             cwd=cwd,
             source=source,
             title=title,
+            task_intent=task_intent or title,
+            workspace_name=workspace_name,
             current_action=current_action,
             status=status,
             plan=plan,
@@ -159,14 +206,19 @@ class CodexRolloutParser:
 
 
 class CodexObserver:
-    def __init__(self, service: TaskFSMService, sessions_root: str | Path | None = None):
+    def __init__(self, service: TaskFSMService, sessions_root: str | Path | None = None,
+                 active_window_seconds: float | None = None):
         self.service = service
         explicit_root = sessions_root is not None
         if sessions_root is None:
             codex_home = Path(os.getenv('CODEX_HOME', '~/.codex')).expanduser()
             sessions_root = codex_home / 'sessions'
         self.sessions_root = Path(sessions_root).expanduser()
+        self.active_window_seconds = max(10.0, float(
+            active_window_seconds if active_window_seconds is not None else os.getenv('TASKFSM_CODEX_ACTIVE_WINDOW', '300')
+        ))
         self.parser = CodexRolloutParser()
+        self._branch_cache: dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         if not explicit_root and os.getenv('TASKFSM_CODEX_AUTO_SYNC', '1') == '1':
@@ -182,12 +234,46 @@ class CodexObserver:
         )
         return files[: max(1, min(limit, 1000))]
 
+    def _git_branch(self, cwd: str) -> str:
+        if not cwd:
+            return ''
+        if cwd in self._branch_cache:
+            return self._branch_cache[cwd]
+        path = Path(cwd).expanduser()
+        if not path.exists():
+            self._branch_cache[cwd] = ''
+            return ''
+        try:
+            result = subprocess.run(
+                ['git', '-C', str(path), 'branch', '--show-current'],
+                capture_output=True, text=True, timeout=1, check=False,
+            )
+            branch = result.stdout.strip() if result.returncode == 0 else ''
+        except (OSError, subprocess.TimeoutExpired):
+            branch = ''
+        self._branch_cache[cwd] = branch
+        return branch
+
+    def _runtime_snapshot(self, path: Path, snapshot: CodexSessionSnapshot) -> CodexSessionSnapshot:
+        metadata = dict(snapshot.metadata or {})
+        metadata['workspace_name'] = snapshot.workspace_name
+        metadata['task_intent'] = snapshot.task_intent
+        metadata['session_id'] = snapshot.session_id
+        metadata['git_branch'] = self._git_branch(snapshot.cwd)
+        age = max(0.0, time.time() - path.stat().st_mtime)
+        metadata['activity_age_seconds'] = int(age)
+        status = snapshot.status
+        if age > self.active_window_seconds and status in {'running', 'waiting'}:
+            status = 'ended'
+        metadata['runtime_status'] = status
+        return replace(snapshot, status=status, metadata=metadata)
+
     def sync(self, limit: int = 200) -> dict[str, int]:
         files = self.discover(limit)
         imported = 0
         for path in files:
             try:
-                snapshot = self.parser.parse(path)
+                snapshot = self._runtime_snapshot(path, self.parser.parse(path))
                 self.service.upsert_observed_codex_session(snapshot)
                 imported += 1
             except (OSError, ValueError):
@@ -216,11 +302,7 @@ class CodexObserver:
 
 
 class CodexRuntimeManager:
-    """Runs managed local Codex processes without making CLI output authoritative.
-
-    Process JSONL is observability only. Task state transitions continue to go
-    through TaskFSM actions/guards (typically via the TaskFSM MCP tools).
-    """
+    """Runs managed local Codex processes without making CLI output authoritative."""
 
     def __init__(self, service: TaskFSMService, command: str = 'codex'):
         self.service = service
