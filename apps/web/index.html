@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TaskFSM · Agent 任务观测与调度控制台</title>
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">◇</div>
+        <div><strong>TaskFSM</strong><span>v0.3</span><small>Agent 任务观测与调度控制台</small></div>
+      </div>
+      <nav class="main-nav" aria-label="主导航">
+        <button data-view="board">▦ 看板</button>
+        <button class="active" data-view="runtime">⌘ 运行视图</button>
+        <button data-view="tasks">▣ 任务</button>
+        <button data-view="agents">♧ Agent</button>
+        <button data-view="timeline">◴ 时间线</button>
+        <button data-view="system">⚙ 系统</button>
+      </nav>
+      <div class="toolbar"><span id="connectionState" class="chip">演示模式</span>
+        <button id="codexSync" class="chip" type="button" title="扫描本机 Codex 原生 Session">↻ 同步 Codex</button>
+        <label class="search">⌕<input id="globalSearch" placeholder="搜索任务、Session、工作区、Agent…" /></label>
+        <button class="icon-btn" aria-label="通知">♢<span class="badge">3</span></button>
+        <button class="icon-btn" aria-label="主题">☼</button>
+        <div class="human-avatar">李</div>
+      </div>
+    </header>
+
+    <main>
+      <section class="summary-grid" id="summaryGrid" aria-label="系统概览"></section>
+
+      <section class="workspace-grid">
+        <aside class="panel pipeline-panel">
+          <div class="panel-title"><div><h2>Agent Runtime</h2><p>Codex 原生 Session 的真实活动状态</p></div><button class="ghost">⋮</button></div>
+          <div id="runtimePipeline" class="pipeline"></div>
+          <div class="panel-title"><div><h2>Managed FSM</h2><p>仅统计由 TaskFSM 拥有生命周期的任务</p></div></div>
+          <div id="pipeline" class="pipeline"></div>
+        </aside>
+
+        <section class="center-stack">
+          <section class="panel topology-panel">
+            <div class="panel-title topology-heading">
+              <div><h2>Agent 运行关系图</h2><p>优先展示正在活动或等待输入的 Session；历史会话不再占满运行区</p></div>
+              <div class="panel-actions"><button class="chip active">◉ 实时</button><button class="chip">Observed + Managed</button></div>
+            </div>
+            <div id="topology" class="topology" aria-label="Agent 运行拓扑"></div>
+          </section>
+
+          <div class="lower-grid">
+            <section class="panel compact-panel">
+              <div class="panel-title"><div><h2>当前活动 <span id="runningCount" class="count"></span></h2></div><button class="ghost">⌃</button></div>
+              <div id="runningTasks" class="running-tasks"></div>
+            </section>
+            <section class="panel compact-panel">
+              <div class="panel-title"><div><h2>✣ 实时事件流</h2></div><div class="panel-actions"><span class="chip">Agent / FSM / Runtime</span></div></div>
+              <div id="eventFeed" class="event-feed"></div>
+            </section>
+          </div>
+        </section>
+
+        <aside id="taskDetail" class="panel detail-panel" aria-label="任务详情"></aside>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./src/app.mjs"></script>
+</body>
+</html>

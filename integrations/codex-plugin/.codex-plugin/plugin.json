@@ -1,0 +1,28 @@
+{
+  "name": "taskfsm",
+  "version": "0.1.0",
+  "description": "Connect Codex CLI runs to TaskFSM observability and managed task lifecycle",
+  "author": {"name": "TaskFSM"},
+  "repository": "https://github.com/Humor-Bin/TaskFSM",
+  "license": "MIT",
+  "keywords": ["codex", "taskfsm", "agent", "observability", "orchestration"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "TaskFSM",
+    "shortDescription": "Observe and manage Codex tasks through TaskFSM",
+    "longDescription": "Adds TaskFSM worker guidance for Codex. In observed mode TaskFSM only projects native Codex sessions; in managed mode Codex uses TaskFSM MCP tools for progress, artifacts, heartbeat, and review transitions.",
+    "developerName": "TaskFSM",
+    "category": "Engineering",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/Humor-Bin/TaskFSM",
+    "privacyPolicyURL": "https://github.com/Humor-Bin/TaskFSM",
+    "termsOfServiceURL": "https://github.com/Humor-Bin/TaskFSM",
+    "defaultPrompt": [
+      "执行当前 TaskFSM 任务并持续上报进度",
+      "读取 TaskFSM 任务上下文并提交可审查产物"
+    ],
+    "brandColor": "#6D5DFC",
+    "screenshots": []
+  }
+}
