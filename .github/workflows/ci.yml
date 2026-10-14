@@ -41,6 +41,20 @@ jobs:
           PYTHONPATH: .
         run: pytest -q
 
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install TaskFSM MCP
+        run: pip install -e packages/taskfsm-mcp
+      - name: Import MCP server
+        run: python -c "from taskfsm_mcp.server import mcp; assert mcp is not None"
+      - name: Compile MCP package
+        run: python -m compileall -q packages/taskfsm-mcp/taskfsm_mcp
+
   web:
     runs-on: ubuntu-latest
     steps:
