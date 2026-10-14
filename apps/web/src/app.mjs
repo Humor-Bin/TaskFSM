@@ -3,14 +3,19 @@ import { summarizeTasks, transitionTask, createEvent } from './core.mjs';
 const stateLabel={backlog:'任务池',todo:'待办',ready:'就绪',in_progress:'进行中',review:'待审查',blocked:'已阻塞',done:'已完成'};
 const stateClass={'进行中':'running','待审查':'review','已阻塞':'blocked','已完成':'done'};
 const pipelineOrder=['任务池','待办','就绪','进行中','待审查','已阻塞','已完成'];
+const runtimeLabel={active:'活跃',running:'活跃',waiting:'等待输入',ended:'已结束',error:'异常',failed:'异常'};
+
 const demoTasks=[
-  {id:'CODEX-DEMO',title:'Codex 原生会话：重构认证模块',status:'进行中',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'正在修改认证逻辑',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-demo',plan:['阅读代码','修改认证','运行测试'],runStatus:'running'},
-  {id:'TASK-103',title:'构建知识库索引',status:'进行中',assignee:'TaskFSM Codex',assigneeType:'agent',progress:72,dependencies:[],priority:'高',currentAction:'正在运行测试',artifacts:['git://abc123'],source:'taskfsm',controlMode:'managed',runId:'run_83f21a7e',runStatus:'running',plan:['分析索引结构','实现索引','运行验证']},
-  {id:'TASK-104',title:'设计检索策略',status:'待审查',assignee:'Builder',assigneeType:'agent',progress:88,dependencies:['TASK-103'],priority:'高',currentAction:'等待审查',artifacts:['retrieval-spec.md'],source:'taskfsm',controlMode:'managed'},
+  {id:'CODEX-ACTIVE',title:'修复数据导入字段映射错误',taskIntent:'修复数据导入字段映射错误，并运行测试验证',status:'进行中',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'正在执行命令：pytest tests/test_importer.py -q',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-active',plan:['阅读导入代码','修复字段映射','运行测试'],runStatus:'running',runtimeStatus:'active',workspace:'/home/user/Project/DataLabeling',workspaceName:'DataLabeling',gitBranch:'main',runId:'run_observed_1'},
+  {id:'CODEX-HISTORY',title:'整理旧代码',taskIntent:'整理旧代码',status:'已完成',assignee:'Codex Observer',assigneeType:'agent',progress:0,dependencies:[],priority:'中',currentAction:'本轮已完成，等待下一步',artifacts:[],source:'codex',controlMode:'observed',externalId:'sess-ended',plan:[],runStatus:'ended',runtimeStatus:'ended',workspace:'/home/user/Project/Legacy',workspaceName:'Legacy',gitBranch:'main',runId:'run_observed_2'},
+  {id:'TASK-103',title:'构建知识库索引',taskIntent:'构建知识库索引',status:'进行中',assignee:'TaskFSM Codex',assigneeType:'agent',progress:72,dependencies:[],priority:'高',currentAction:'正在运行测试',artifacts:['git://abc123'],source:'taskfsm',controlMode:'managed',runId:'run_83f21a7e',runStatus:'running',runtimeStatus:'active',workspace:'/repo/taskfsm',workspaceName:'taskfsm',gitBranch:'feature/index',plan:['分析索引结构','实现索引','运行验证']},
+  {id:'TASK-104',title:'设计检索策略',taskIntent:'设计检索策略',status:'待审查',assignee:'Builder',assigneeType:'agent',progress:88,dependencies:['TASK-103'],priority:'高',currentAction:'等待审查',artifacts:['retrieval-spec.md'],source:'taskfsm',controlMode:'managed',runStatus:'awaiting_review',runtimeStatus:'waiting'},
 ];
 let tasks=structuredClone(demoTasks);
-let events=[createEvent({actor:'Codex Observer',actorType:'agent',taskId:'CODEX-DEMO',text:'发现原生 Codex Session'}),createEvent({actor:'TaskFSM Codex',actorType:'agent',taskId:'TASK-103',text:'调用 run_tests'})];
+let events=[createEvent({actor:'Codex Observer',actorType:'agent',taskId:'CODEX-ACTIVE',text:'发现活跃 Codex Session'}),createEvent({actor:'TaskFSM Codex',actorType:'agent',taskId:'TASK-103',text:'正在运行测试'})];
 let dashboard=null;
+let managedSummary={backlog:0,todo:0,ready:0,in_progress:1,review:1,blocked:0,done:0};
+let observedRuntimeSummary={active:1,waiting:0,ended:1,error:0};
 let selectedTaskId=tasks[0].id;
 let detailTab='运行';
 let liveMode=false;
@@ -22,38 +27,58 @@ const selectedTask=()=>tasks.find((task)=>task.id===selectedTaskId)||tasks[0];
 const avatar=(task)=>`<span class="avatar actor-${task.assigneeType}">${task.assigneeType==='agent'?'AI':escapeHtml(task.assignee?.slice(0,1)||'人')}</span>`;
 const pill=(status)=>`<span class="status ${stateClass[status]||''}">${status}</span>`;
 const modePill=(task)=>`<span class="chip ${task.controlMode==='observed'?'':'active'}">${task.controlMode==='observed'?'◎ 观察':'◆ 受管'}</span>`;
+const runtimePill=(status)=>`<span class="status ${status==='error'?'blocked':status==='ended'?'done':status==='waiting'?'review':'running'}">${runtimeLabel[status]||status||'未知'}</span>`;
 const bar=(value=0)=>`<span class="progress"><i style="width:${Math.max(0,Math.min(100,value))}%"></i></span>`;
 
+function computeObservedSummary(){
+  const result={active:0,waiting:0,ended:0,error:0};
+  tasks.filter((t)=>t.controlMode==='observed').forEach((t)=>{const key=t.runtimeStatus==='running'?'active':t.runtimeStatus||'ended';result[key]=(result[key]||0)+1;});
+  return result;
+}
+function computeManagedSummary(){return summarizeTasks(tasks.filter((t)=>t.controlMode==='managed'));}
+
 function renderSummary(){
-  const counts=summarizeTasks(tasks);
-  const observed=tasks.filter((t)=>t.controlMode==='observed').length;
-  const managed=tasks.filter((t)=>t.controlMode==='managed').length;
-  const activeAgents=new Set(tasks.filter((t)=>t.status==='进行中'&&t.assigneeType==='agent').map((t)=>t.assignee)).size;
-  const cards=[['🤖','活跃 Agent',activeAgents],['◎','原生会话',observed],['◆','受管任务',managed],['!','阻塞任务',counts['已阻塞']||0],['✓','已完成',counts['已完成']||0]];
-  $('#summaryGrid').innerHTML=cards.map(([icon,label,value])=>`<article class="metric-card"><span class="metric-icon">${icon}</span><div><label>${label}</label><strong>${value}</strong><small>实时统计</small></div></article>`).join('')+`<article class="metric-card wide-metric"><div><label>双向 Agent 控制平面</label><small>Agent → TaskFSM 观察 / TaskFSM → Agent 调度</small></div><div class="mini-stat"><span>事件</span><strong>${events.length}</strong></div><div class="mini-stat"><span>数据源</span><strong>${liveMode?'实时':'演示'}</strong></div></article>`;
+  const observed=observedRuntimeSummary||computeObservedSummary();
+  const managed=managedSummary||computeManagedSummary();
+  const activeAgentNames=new Set(tasks.filter((t)=>(t.controlMode==='observed'&&['active','running','waiting'].includes(t.runtimeStatus))||(t.controlMode==='managed'&&['进行中','待审查'].includes(t.status))).map((t)=>t.assignee).filter(Boolean));
+  const managedTotal=Object.values(managed).reduce((sum,value)=>sum+Number(value||0),0);
+  const cards=[['🤖','活跃 Agent',activeAgentNames.size],['◎','活跃 Session',observed.active||0],['?','等待输入',observed.waiting||0],['◌','历史 Session',observed.ended||0],['◆','受管任务',managedTotal]];
+  $('#summaryGrid').innerHTML=cards.map(([icon,label,value])=>`<article class="metric-card"><span class="metric-icon">${icon}</span><div><label>${label}</label><strong>${value}</strong><small>实时统计</small></div></article>`).join('')+`<article class="metric-card wide-metric"><div><label>人类可读运行视图</label><small>任务意图 → 当前活动 → Session / Workspace → Agent Plan</small></div><div class="mini-stat"><span>异常</span><strong>${observed.error||0}</strong></div><div class="mini-stat"><span>数据源</span><strong>${liveMode?'实时':'演示'}</strong></div></article>`;
 }
 
-function renderPipeline(){const counts=summarizeTasks(tasks);$('#pipeline').innerHTML=pipelineOrder.map((status)=>`<div class="pipeline-item ${status==='进行中'?'active':''}"><span class="pipe-dot"></span><strong><span>${status}</span><b>${counts[status]||0}</b></strong><small>${status==='已阻塞'?'异常/等待分支':'统一状态投影'}</small></div>`).join('');}
+function renderPipeline(){
+  const observed=observedRuntimeSummary||computeObservedSummary();
+  const runtimeItems=[['●','活跃 Session',observed.active||0,'最近仍有 Codex 活动'],['?','等待输入',observed.waiting||0,'需要人类响应'],['✓','历史 Session',observed.ended||0,'已结束或长时间无活动'],['!','异常',observed.error||0,'运行错误']];
+  $('#runtimePipeline').innerHTML=runtimeItems.map(([dot,label,count,desc])=>`<div class="pipeline-item ${label==='活跃 Session'?'active':''}"><span class="pipe-dot"></span><strong><span>${dot} ${label}</span><b>${count}</b></strong><small>${desc}</small></div>`).join('');
+  const managed=managedSummary||computeManagedSummary();
+  $('#pipeline').innerHTML=pipelineOrder.map((label)=>{const key=Object.keys(stateLabel).find((item)=>stateLabel[item]===label);const count=managed[key]??managed[label]??0;return `<div class="pipeline-item ${label==='进行中'?'active':''}"><span class="pipe-dot"></span><strong><span>${label}</span><b>${count}</b></strong><small>TaskFSM 权威状态</small></div>`;}).join('');
+}
 
-function taskNode(task,index){const pos=[[32,15],[62,16],[32,43],[62,45],[32,70],[62,70]][index%6];return `<button class="topo-node task ${task.id===selectedTaskId?'selected':''}" data-task="${task.id}" style="left:${pos[0]}%;top:${pos[1]}%"><small>${task.source==='codex'?'Codex · ':''}${escapeHtml(task.id)}</small><strong>${escapeHtml(task.title)}</strong><div class="node-foot">${pill(task.status)}${modePill(task)}</div>${task.progress?bar(task.progress):''}</button>`;}
+function taskNode(task,index){
+  const pos=[[32,15],[62,16],[32,43],[62,45],[32,70],[62,70]][index%6];
+  const status=task.controlMode==='observed'?runtimePill(task.runtimeStatus):pill(task.status);
+  return `<button class="topo-node task ${task.id===selectedTaskId?'selected':''}" data-task="${task.id}" style="left:${pos[0]}%;top:${pos[1]}%"><small>${task.controlMode==='observed'?'Codex Session':'TaskFSM Task'} · ${escapeHtml(task.workspaceName||task.id)}</small><strong>${escapeHtml(task.taskIntent||task.title)}</strong><div class="node-foot">${status}${modePill(task)}</div></button>`;
+}
 function renderTopology(){
-  const visible=tasks.filter((t)=>['进行中','待审查','已阻塞','已完成'].includes(t.status)).slice(0,6);
+  const visible=tasks.filter((t)=>t.controlMode==='observed'?['active','running','waiting','error'].includes(t.runtimeStatus):['进行中','待审查','已阻塞'].includes(t.status)).slice(0,6);
   const agents=[...new Set(visible.map((t)=>t.assignee).filter(Boolean))].slice(0,3);
   const edges=`<svg viewBox="0 0 1000 480" preserveAspectRatio="none"><path class="edge active" d="M150 100 C250 100 260 100 335 110"/><path class="edge active" d="M150 225 C260 225 260 230 335 235"/><path class="edge warning" d="M520 120 C600 120 590 120 650 120"/></svg>`;
-  $('#topology').innerHTML=edges+agents.map((name,i)=>`<div class="topo-node agent" style="left:7%;top:${18+i*27}%"><div class="agent-line"><span class="avatar actor-agent">AI</span><div><strong>${escapeHtml(name)}</strong><small>Codex / Agent</small></div></div><span class="heartbeat">● 在线</span></div>`).join('')+visible.map(taskNode).join('')+`<div class="topo-node service" style="left:86%;top:35%"><strong>TaskFSM</strong><small>FSM · Event · Runtime</small></div>`;
+  const empty=visible.length?'':'<div class="empty" style="padding:48px">当前没有活跃 Session 或受管任务</div>';
+  $('#topology').innerHTML=edges+agents.map((name,i)=>`<div class="topo-node agent" style="left:7%;top:${18+i*27}%"><div class="agent-line"><span class="avatar actor-agent">AI</span><div><strong>${escapeHtml(name)}</strong><small>Codex / Agent</small></div></div><span class="heartbeat">● 已连接</span></div>`).join('')+visible.map(taskNode).join('')+`<div class="topo-node service" style="left:86%;top:35%"><strong>TaskFSM</strong><small>Observe · FSM · Runtime</small></div>`+empty;
   document.querySelectorAll('[data-task]').forEach((el)=>el.addEventListener('click',()=>selectTask(el.dataset.task)));
 }
 
 function renderRunningTasks(){
-  const running=tasks.filter((t)=>['进行中','已阻塞','待审查'].includes(t.status)).slice(0,8);
+  const running=tasks.filter((t)=>t.controlMode==='observed'?['active','running','waiting','error'].includes(t.runtimeStatus):['进行中','待审查','已阻塞'].includes(t.status)).slice(0,10);
   $('#runningCount').textContent=`(${running.length})`;
-  $('#runningTasks').innerHTML=`<div class="task-row head"><span>任务</span><span>执行者</span><span>模式</span><span>状态</span></div>`+running.map((t)=>`<button class="task-row ${t.id===selectedTaskId?'selected':''}" data-row-task="${t.id}"><span><b>${escapeHtml(t.id)}</b><small>${escapeHtml(t.title)}</small></span><span class="assignee">${avatar(t)}${escapeHtml(t.assignee)}</span><span>${modePill(t)}</span><span>${pill(t.status)}</span></button>`).join('');
+  $('#runningTasks').innerHTML=`<div class="task-row head"><span>当前任务</span><span>工作区 / Agent</span><span>模式</span><span>状态</span></div>`+running.map((t)=>`<button class="task-row ${t.id===selectedTaskId?'selected':''}" data-row-task="${t.id}"><span><b>${escapeHtml(t.taskIntent||t.title)}</b><small>${escapeHtml(t.currentAction||'暂无可见活动')}</small></span><span class="assignee"><span>${escapeHtml(t.workspaceName||'—')}</span><small>${escapeHtml(t.assignee||'')}</small></span><span>${modePill(t)}</span><span>${t.controlMode==='observed'?runtimePill(t.runtimeStatus):pill(t.status)}</span></button>`).join('');
   document.querySelectorAll('[data-row-task]').forEach((el)=>el.addEventListener('click',()=>selectTask(el.dataset.rowTask)));
 }
 
 function renderEvents(){$('#eventFeed').innerHTML=events.slice(0,12).map((event)=>`<div class="event severity-${event.severity||'info'}"><time>${event.time||'--:--:--'}</time><span>${event.severity==='error'?'!':'◆'}</span><div><b>${escapeHtml(event.actor||'系统')}</b> ${escapeHtml(event.text)}</div></div>`).join('')||'<div class="empty">暂无事件</div>';}
 
 function dependenciesView(task){
+  if(task.controlMode==='observed')return '<section class="detail-section"><h3>依赖</h3><div class="empty">Observed Session 不强行转换为 TaskFSM 依赖图。</div></section>';
   const upstream=(task.dependencies||[]).map((id)=>tasks.find((t)=>t.id===id)).filter(Boolean);
   const downstream=tasks.filter((t)=>(t.dependencies||[]).includes(task.id));
   const cards=(items,empty)=>items.length?items.map((t)=>`<button class="dependency-card" data-dependency="${t.id}"><strong>${escapeHtml(t.id)} · ${escapeHtml(t.title)}</strong>${pill(t.status)}</button>`).join(''):`<div class="empty">${empty}</div>`;
@@ -62,19 +87,21 @@ function dependenciesView(task){
 
 function runtimeView(task){
   const lease=task.leaseSeconds||0;
-  const plan=(task.plan||[]).length?`<ol>${task.plan.map((item)=>`<li>${escapeHtml(item)}</li>`).join('')}</ol>`:'<div class="empty">Agent 尚未暴露 Plan</div>';
-  return `<section class="detail-section"><h3>运行身份</h3><dl class="kv"><dt>来源</dt><dd>${task.source==='codex'?'Codex 原生 Session':'TaskFSM'}</dd><dt>控制模式</dt><dd>${task.controlMode==='observed'?'Observed · 只读观察':'Managed · TaskFSM 调度'}</dd><dt>Session</dt><dd>${escapeHtml(task.externalId||'—')}</dd><dt>Run</dt><dd>${escapeHtml(task.runId||'—')}</dd><dt>Workspace</dt><dd>${escapeHtml(task.workspace||'—')}</dd><dt>运行状态</dt><dd>${escapeHtml(task.runStatus||'—')}</dd><dt>租约剩余</dt><dd>${lease?`${Math.floor(lease/60)}m ${lease%60}s`:'—'}</dd><dt>当前动作</dt><dd>${escapeHtml(task.currentAction||'—')}</dd></dl></section><section class="detail-section"><h3>Agent 原生执行计划</h3>${plan}</section>`;
+  const plan=(task.plan||[]).length?`<ol>${task.plan.map((item)=>`<li>${escapeHtml(item)}</li>`).join('')}</ol>`:'<div class="empty">Agent 尚未暴露 Plan；TaskFSM 不会伪造执行计划。</div>';
+  const runtimeStatus=task.controlMode==='observed'?(runtimeLabel[task.runtimeStatus]||task.runtimeStatus||'未知'):(task.runStatus||'—');
+  return `<section class="detail-section"><h3>当前任务</h3><p><strong>${escapeHtml(task.taskIntent||task.title)}</strong></p><p>${escapeHtml(task.currentAction||'暂无新的可见活动')}</p></section><section class="detail-section"><h3>执行环境</h3><dl class="kv"><dt>来源</dt><dd>${task.source==='codex'?'Codex 原生 Session':'TaskFSM'}</dd><dt>控制模式</dt><dd>${task.controlMode==='observed'?'Observed · 只读观察':'Managed · TaskFSM 调度'}</dd><dt>工作区</dt><dd>${escapeHtml(task.workspaceName||'—')}</dd><dt>完整路径</dt><dd>${escapeHtml(task.workspace||'—')}</dd><dt>Git 分支</dt><dd>${escapeHtml(task.gitBranch||'—')}</dd><dt>Session</dt><dd>${escapeHtml(task.externalId||'—')}</dd><dt>Run</dt><dd>${escapeHtml(task.runId||'—')}</dd><dt>运行状态</dt><dd>${escapeHtml(runtimeStatus)}</dd><dt>最近活动</dt><dd>${escapeHtml(task.lastEventAt||'—')}</dd><dt>租约剩余</dt><dd>${lease?`${Math.floor(lease/60)}m ${lease%60}s`:'—'}</dd></dl></section><section class="detail-section"><h3>Agent 原生执行计划</h3>${plan}</section>`;
 }
-function overviewView(task){const policy=task.controlMode==='observed'?'此任务来自 Agent 内部，TaskFSM 仅做状态投影和可视化，不拥有调度权。':'此任务由 TaskFSM 管理，Agent 只能通过受控动作请求状态迁移。';return `<section class="detail-section"><h3>任务概览</h3><p>${escapeHtml(policy)}</p><dl class="kv"><dt>优先级</dt><dd>${task.priority}</dd><dt>当前状态</dt><dd>${task.status}</dd><dt>模式</dt><dd>${task.controlMode}</dd></dl></section>`;}
-function eventView(task){const rows=events.filter((e)=>e.taskId===task.id);return `<section class="detail-section"><h3>状态与运行事件</h3>${rows.map((e)=>`<div class="timeline-event"><b>${e.time||''} · ${escapeHtml(e.actor)}</b><span>${escapeHtml(e.text)}</span></div>`).join('')||'<div class="empty">暂无事件</div>'}</section>`;}
+function overviewView(task){const policy=task.controlMode==='observed'?'此条目来自 Agent 原生会话。TaskFSM 负责把任务意图、当前活动和运行状态翻译成人类可读信息，不拥有其生命周期。':'此任务由 TaskFSM 管理，Agent 只能通过受控动作请求状态迁移。';return `<section class="detail-section"><h3>任务概览</h3><p>${escapeHtml(policy)}</p><dl class="kv"><dt>任务意图</dt><dd>${escapeHtml(task.taskIntent||task.title)}</dd><dt>模式</dt><dd>${task.controlMode}</dd><dt>来源</dt><dd>${task.source}</dd></dl></section>`;}
+function eventView(task){const rows=events.filter((e)=>e.taskId===task.id||e.runId===task.runId);return `<section class="detail-section"><h3>状态与运行事件</h3>${rows.map((e)=>`<div class="timeline-event"><b>${e.time||''} · ${escapeHtml(e.actor)}</b><span>${escapeHtml(e.text)}</span></div>`).join('')||'<div class="empty">暂无事件</div>'}</section>`;}
 function artifactView(task){return `<section class="detail-section"><h3>产物</h3>${(task.artifacts||[]).map((a)=>`<div class="artifact"><b>▣ ${escapeHtml(a)}</b><small>可作为后续任务输入</small></div>`).join('')||'<div class="empty">尚未提交产物</div>'}</section>`;}
 
 function renderDetail(){
   const task=selectedTask();if(!task){$('#taskDetail').innerHTML='<div class="empty">暂无任务</div>';return;}
   const tabs=['概览','运行','依赖','事件','产物'];
   const content={概览:overviewView(task),运行:runtimeView(task),依赖:dependenciesView(task),事件:eventView(task),产物:artifactView(task)}[detailTab];
-  const observedNotice=task.controlMode==='observed'?'<div class="detail-actions"><span class="chip">Observed：TaskFSM 不改变此任务状态</span></div>':`<div class="detail-actions"><button id="pauseBtn" class="action">${paused?'▶ 恢复':'Ⅱ 暂停'}</button><button id="reviewBtn" class="action primary">提交审查</button><button id="completeBtn" class="action success">批准并完成</button></div>`;
-  $('#taskDetail').innerHTML=`<div class="detail-head"><small>${escapeHtml(task.id)}</small><h1>${escapeHtml(task.title)}</h1><div>${pill(task.status)} ${modePill(task)}</div></div><div class="tabs">${tabs.map((tab)=>`<button class="tab ${tab===detailTab?'active':''}" data-tab="${tab}">${tab}</button>`).join('')}</div><div class="detail-content">${content}</div>${observedNotice}`;
+  const status=task.controlMode==='observed'?runtimePill(task.runtimeStatus):pill(task.status);
+  const observedNotice=task.controlMode==='observed'?'<div class="detail-actions"><span class="chip">Observed：TaskFSM 只解释与展示，不改变该 Session 状态</span></div>':`<div class="detail-actions"><button id="pauseBtn" class="action">${paused?'▶ 恢复':'Ⅱ 暂停'}</button><button id="reviewBtn" class="action primary">提交审查</button><button id="completeBtn" class="action success">批准并完成</button></div>`;
+  $('#taskDetail').innerHTML=`<div class="detail-head"><small>${escapeHtml(task.workspaceName||task.id)} · ${escapeHtml(task.externalId||task.id)}</small><h1>${escapeHtml(task.taskIntent||task.title)}</h1><div>${status} ${modePill(task)}</div></div><div class="tabs">${tabs.map((tab)=>`<button class="tab ${tab===detailTab?'active':''}" data-tab="${tab}">${tab}</button>`).join('')}</div><div class="detail-content">${content}</div>${observedNotice}`;
   document.querySelectorAll('[data-tab]').forEach((el)=>el.addEventListener('click',()=>{detailTab=el.dataset.tab;renderDetail();}));
   document.querySelectorAll('[data-dependency]').forEach((el)=>el.addEventListener('click',()=>selectTask(el.dataset.dependency)));
   if(task.controlMode!=='observed'){$('#pauseBtn')?.addEventListener('click',togglePause);$('#reviewBtn')?.addEventListener('click',submitReview);$('#completeBtn')?.addEventListener('click',markComplete);}
@@ -102,13 +129,20 @@ async function markComplete(){
 
 function mapDashboard(data){
   dashboard=data;
+  managedSummary=data.managed_summary||data.summary||computeManagedSummary();
+  observedRuntimeSummary=data.observed_runtime_summary||computeObservedSummary();
   const agents=new Map((data.agents||[]).map((a)=>[a.id,a]));
   const leases=new Map((data.active_leases||[]).map((l)=>[l.task_id,l]));
   const runs=new Map();for(const run of data.runs||[]){if(!runs.has(run.task_id))runs.set(run.task_id,run);}
   const artifactMap=new Map();(data.artifacts||[]).forEach((a)=>{const list=artifactMap.get(a.task_id)||[];list.push(a.uri);artifactMap.set(a.task_id,list);});
-  tasks=(data.tasks||[]).map((t)=>{const agent=agents.get(t.assignee_id);const lease=leases.get(t.id);const run=runs.get(t.id);return {id:t.id,title:t.title,status:stateLabel[t.status]||t.status,assignee:agent?.name||(t.assignee_type==='human'?'Alice':'未分配'),assigneeId:t.assignee_id,assigneeType:t.assignee_type||'human',progress:t.progress||0,dependencies:t.dependency_ids||[],priority:t.priority==='high'?'高':t.priority==='low'?'低':'中',currentAction:t.current_action||run?.current_event?.message||'',leaseSeconds:lease?.expires_at?Math.max(0,Math.floor((new Date(lease.expires_at)-Date.now())/1000)):0,heartbeatSeconds:agent?Math.max(0,Math.floor((Date.now()-new Date(agent.last_heartbeat_at))/1000)):0,runId:run?.id||'—',runStatus:run?.status||'—',workspace:run?.workspace||t.source_metadata?.cwd||'',externalId:t.external_id||run?.external_session_id||'',source:t.source||'taskfsm',controlMode:t.control_mode||'managed',plan:run?.plan_snapshot||[],artifacts:artifactMap.get(t.id)||[]};});
-  events=(data.events||[]).slice().reverse().map((e)=>({id:`evt-${e.id}`,time:new Date(e.created_at).toLocaleTimeString('zh-CN',{hour12:false}),actor:e.actor_id,actorType:e.actor_type,taskId:e.payload?.task_id||e.entity_id,severity:e.event_type.includes('expired')||e.event_type.includes('failed')?'error':e.event_type.includes('completed')?'success':'info',text:`${e.event_type}${e.payload?.message?` · ${e.payload.message}`:''}`}));
-  if(!tasks.some((t)=>t.id===selectedTaskId))selectedTaskId=tasks[0]?.id||selectedTaskId;
+  tasks=(data.tasks||[]).map((t)=>{
+    const agent=agents.get(t.assignee_id);const lease=leases.get(t.id);const run=runs.get(t.id);const metadata=t.source_metadata||{};
+    const rawRuntime=metadata.runtime_status||run?.status||'';
+    return {id:t.id,title:t.title,taskIntent:metadata.task_intent||t.title,status:stateLabel[t.status]||t.status,assignee:agent?.name||(t.assignee_type==='human'?'Alice':'未分配'),assigneeId:t.assignee_id,assigneeType:t.assignee_type||'human',progress:t.progress||0,dependencies:t.dependency_ids||[],priority:t.priority==='high'?'高':t.priority==='low'?'低':'中',currentAction:t.current_action||run?.current_event?.message||'',leaseSeconds:lease?.expires_at?Math.max(0,Math.floor((new Date(lease.expires_at)-Date.now())/1000)):0,heartbeatSeconds:agent?Math.max(0,Math.floor((Date.now()-new Date(agent.last_heartbeat_at))/1000)):0,runId:run?.id||'—',runStatus:run?.status||'—',runtimeStatus:rawRuntime==='running'?'active':rawRuntime,workspace:run?.workspace||metadata.cwd||'',workspaceName:metadata.workspace_name||(run?.workspace?run.workspace.split('/').filter(Boolean).at(-1):''),gitBranch:metadata.git_branch||'',externalId:t.external_id||run?.external_session_id||'',source:t.source||'taskfsm',controlMode:t.control_mode||'managed',plan:run?.plan_snapshot||[],lastEventAt:run?.last_event_at?new Date(run.last_event_at).toLocaleString('zh-CN',{hour12:false}):'',artifacts:artifactMap.get(t.id)||[]};
+  });
+  events=(data.events||[]).slice().reverse().map((e)=>({id:`evt-${e.id}`,time:new Date(e.created_at).toLocaleTimeString('zh-CN',{hour12:false}),actor:e.actor_id,actorType:e.actor_type,taskId:e.payload?.task_id||e.entity_id,runId:e.entity_type==='run'?e.entity_id:null,severity:e.event_type.includes('expired')||e.event_type.includes('failed')?'error':e.event_type.includes('completed')?'success':'info',text:e.payload?.message||e.payload?.task_intent||e.event_type.replaceAll('.',' · ')}));
+  const preferred=tasks.find((t)=>t.controlMode==='observed'&&['active','waiting','error'].includes(t.runtimeStatus))||tasks.find((t)=>t.controlMode==='managed'&&['进行中','待审查','已阻塞'].includes(t.status))||tasks[0];
+  if(!tasks.some((t)=>t.id===selectedTaskId))selectedTaskId=preferred?.id||selectedTaskId;
 }
 async function refreshFromApi(){const response=await fetch('/api/dashboard',{cache:'no-store'});if(!response.ok)throw new Error('API 不可用');mapDashboard(await response.json());liveMode=true;$('#connectionState').textContent='● 实时连接';$('#connectionState').classList.add('active');renderAll();}
 function connectEvents(){const source=new EventSource('/api/events/stream');source.onmessage=()=>refreshFromApi().catch(()=>{});source.onerror=()=>{$('#connectionState').textContent='● 正在重连';};}
@@ -120,7 +154,7 @@ async function syncCodex(){
 }
 function wireGlobal(){
   document.querySelectorAll('.main-nav button').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view!=='runtime')showToast('当前版本聚焦运行视图，其余模块保留导航入口');}));
-  $('#globalSearch').addEventListener('input',(event)=>{const q=event.target.value.trim().toLowerCase();if(!q)return;const hit=tasks.find((t)=>`${t.id}${t.title}${t.assignee}${t.externalId||''}`.toLowerCase().includes(q));if(hit)selectTask(hit.id);});
+  $('#globalSearch').addEventListener('input',(event)=>{const q=event.target.value.trim().toLowerCase();if(!q)return;const hit=tasks.find((t)=>`${t.id}${t.taskIntent}${t.title}${t.assignee}${t.externalId||''}${t.workspaceName||''}`.toLowerCase().includes(q));if(hit)selectTask(hit.id);});
   $('#codexSync')?.addEventListener('click',syncCodex);
 }
 async function boot(){wireGlobal();renderAll();try{await refreshFromApi();connectEvents();}catch{$('#connectionState').textContent='离线演示模式';showToast('后端未连接，显示本地演示数据','error');}}
