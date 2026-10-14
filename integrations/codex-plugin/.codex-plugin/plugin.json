@@ -7,6 +7,7 @@
   "license": "MIT",
   "keywords": ["codex", "taskfsm", "agent", "observability", "orchestration"],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "TaskFSM",
     "shortDescription": "Observe and manage Codex tasks through TaskFSM",
