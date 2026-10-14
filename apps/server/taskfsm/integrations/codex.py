@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,9 @@ import threading
 from typing import Any
 
 from taskfsm.domain.service import DomainError, TaskFSMService
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -157,11 +161,16 @@ class CodexRolloutParser:
 class CodexObserver:
     def __init__(self, service: TaskFSMService, sessions_root: str | Path | None = None):
         self.service = service
+        explicit_root = sessions_root is not None
         if sessions_root is None:
             codex_home = Path(os.getenv('CODEX_HOME', '~/.codex')).expanduser()
             sessions_root = codex_home / 'sessions'
         self.sessions_root = Path(sessions_root).expanduser()
         self.parser = CodexRolloutParser()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        if not explicit_root and os.getenv('TASKFSM_CODEX_AUTO_SYNC', '1') == '1':
+            self.start_background(float(os.getenv('TASKFSM_CODEX_SYNC_INTERVAL', '5')))
 
     def discover(self, limit: int = 200) -> list[Path]:
         if not self.sessions_root.exists():
@@ -184,6 +193,26 @@ class CodexObserver:
             except (OSError, ValueError):
                 continue
         return {'discovered': len(files), 'synced': imported}
+
+    def start_background(self, interval_seconds: float = 5.0):
+        if self._thread and self._thread.is_alive():
+            return
+        interval_seconds = max(1.0, float(interval_seconds))
+        self._stop.clear()
+
+        def loop():
+            while not self._stop.is_set():
+                try:
+                    self.sync()
+                except Exception:
+                    logger.exception('Codex observer background sync failed')
+                self._stop.wait(interval_seconds)
+
+        self._thread = threading.Thread(target=loop, name='taskfsm-codex-observer', daemon=True)
+        self._thread.start()
+
+    def stop_background(self):
+        self._stop.set()
 
 
 class CodexRuntimeManager:
