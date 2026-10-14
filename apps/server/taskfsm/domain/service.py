@@ -227,14 +227,22 @@ class TaskFSMService:
                 agent = Agent(name='Codex Observer', kind='codex-cli', capabilities=['observe'], token_hash='')
                 s.add(agent); s.flush()
             run = s.scalars(select(Run).where(Run.external_session_id == snapshot.session_id, Run.control_mode == 'observed')).first()
-            desired_status = 'blocked' if snapshot.status == 'waiting' else 'in_progress'
+            desired_status = {'waiting': 'blocked', 'ended': 'done', 'error': 'blocked'}.get(snapshot.status, 'in_progress')
+            metadata = {
+                'rollout_path': snapshot.path,
+                'cwd': snapshot.cwd,
+                'session_id': snapshot.session_id,
+                'workspace_name': snapshot.workspace_name,
+                'task_intent': snapshot.task_intent,
+                'runtime_status': snapshot.status,
+                **(snapshot.metadata or {}),
+            }
             if not run:
                 task = Task(
                     title=snapshot.title, description='从 Codex 原生 Session 自动投影', status=desired_status,
                     priority='medium', assignee_type='agent', assignee_id=agent.id,
                     source='codex', control_mode='observed', external_id=snapshot.session_id,
-                    current_action=snapshot.current_action,
-                    source_metadata={'rollout_path': snapshot.path, 'cwd': snapshot.cwd, **(snapshot.metadata or {})},
+                    current_action=snapshot.current_action, source_metadata=metadata,
                 )
                 s.add(task); s.flush()
                 run = Run(
@@ -242,18 +250,22 @@ class TaskFSMService:
                     external_session_id=snapshot.session_id, workspace=snapshot.cwd, plan_snapshot=list(snapshot.plan),
                     current_event={'type': 'observed', 'message': snapshot.current_action}, last_event_at=snapshot.last_event_at,
                 )
+                if snapshot.status == 'ended': run.ended_at = snapshot.last_event_at or utcnow()
                 s.add(run); s.flush()
                 event = self._event(s, 'codex.session_discovered', 'run', run.id, 'agent', agent.id,
-                                    {'task_id': task.id, 'session_id': snapshot.session_id, 'workspace': snapshot.cwd})
+                                    {'task_id': task.id, 'session_id': snapshot.session_id, 'workspace': snapshot.cwd,
+                                     'task_intent': snapshot.task_intent, 'runtime_status': snapshot.status})
             else:
                 task = s.get(Task, run.task_id)
-                changed = run.status != snapshot.status or task.current_action != snapshot.current_action or list(run.plan_snapshot or []) != list(snapshot.plan)
+                changed = run.status != snapshot.status or task.current_action != snapshot.current_action or list(run.plan_snapshot or []) != list(snapshot.plan) or task.title != snapshot.title
                 run.status = snapshot.status; run.workspace = snapshot.cwd; run.plan_snapshot = list(snapshot.plan)
                 run.current_event = {'type': 'observed', 'message': snapshot.current_action}; run.last_event_at = snapshot.last_event_at
+                run.ended_at = (snapshot.last_event_at or utcnow()) if snapshot.status == 'ended' else None
                 task.title = snapshot.title; task.status = desired_status; task.current_action = snapshot.current_action
-                task.source_metadata = {'rollout_path': snapshot.path, 'cwd': snapshot.cwd, **(snapshot.metadata or {})}
+                task.source_metadata = metadata
                 event = self._event(s, 'codex.session_updated', 'run', run.id, 'agent', agent.id,
-                                    {'task_id': task.id, 'session_id': snapshot.session_id, 'status': snapshot.status}) if changed else None
+                                    {'task_id': task.id, 'session_id': snapshot.session_id, 'status': snapshot.status,
+                                     'task_intent': snapshot.task_intent}) if changed else None
             _ = list(task.dependencies)
             s.commit()
             if event: self._publish_after(event)
