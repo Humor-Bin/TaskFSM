@@ -20,3 +20,23 @@ test('Observed 任务在前端不允许通过 TaskFSM 状态动作完成', async
   assert.match(app, /Observed 任务由外部 Agent 状态驱动/);
   assert.match(app, /Observed 任务不能由 TaskFSM 完成/);
 });
+
+test('运行视图明确区分 Agent Runtime 与 Managed FSM', async () => {
+  const html = await read('../index.html');
+  const app = await read('../src/app.mjs');
+  assert.match(html, /Agent Runtime/);
+  assert.match(html, /Managed FSM/);
+  assert.match(app, /活跃 Session/);
+  assert.match(app, /等待输入/);
+  assert.match(app, /历史 Session/);
+  assert.match(app, /managedSummary/);
+  assert.match(app, /observedRuntimeSummary/);
+});
+
+test('Observed 详情优先展示人类可读任务、工作区、会话和原生计划', async () => {
+  const app = await read('../src/app.mjs');
+  for (const token of ['taskIntent', 'workspaceName', 'gitBranch', 'runtimeStatus', '原生执行计划', '当前任务', '工作区', 'Session']) {
+    assert.match(app, new RegExp(token));
+  }
+  assert.doesNotMatch(app, /当前动作<\/dt><dd>\$\{escapeHtml\(task\.currentAction\|\|'—'\)\}/);
+});
