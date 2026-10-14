@@ -53,6 +53,33 @@ def _human_title(text: str, limit: int = 80) -> str:
     return line
 
 
+def _looks_like_context(text: str) -> bool:
+    value = str(text or '').strip().lower()
+    return (
+        not value
+        or value.startswith('<environment_context>')
+        or value.startswith('<developer>')
+        or value.startswith('<instructions>')
+        or ('<cwd>' in value and '<shell>' in value)
+    )
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ''
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get('type') or '') in {'input_text', 'output_text', 'text'}:
+            value = item.get('text')
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+    return '\n'.join(parts).strip()
+
+
 def _event_message(payload: dict[str, Any]) -> str:
     for key in ('message', 'text', 'summary', 'name'):
         value = payload.get(key)
@@ -85,6 +112,25 @@ def _item_activity(payload_type: str, item: dict[str, Any]) -> str:
     return ''
 
 
+def _response_item_activity(payload: dict[str, Any]) -> str:
+    item_type = str(payload.get('type') or '').lower()
+    if item_type == 'message' and str(payload.get('role') or '').lower() == 'assistant':
+        text = _content_text(payload.get('content'))
+        return ' '.join(text.split())[:300] if text else ''
+    if item_type in {'custom_tool_call', 'function_call', 'tool_call'}:
+        name = str(payload.get('name') or payload.get('tool_name') or item_type).strip()
+        raw_input = payload.get('input')
+        if isinstance(raw_input, dict):
+            detail = json.dumps(raw_input, ensure_ascii=False)
+        else:
+            detail = str(raw_input or payload.get('arguments') or '').strip()
+        detail = ' '.join(detail.split())[:180]
+        return f'正在执行工具：{name} · {detail}' if detail else f'正在执行工具：{name}'
+    if item_type in {'custom_tool_call_output', 'function_call_output', 'tool_output'}:
+        return '工具执行完成'
+    return ''
+
+
 @dataclass
 class CodexSessionSnapshot:
     session_id: str
@@ -102,7 +148,12 @@ class CodexSessionSnapshot:
 
 
 class CodexRolloutParser:
-    """Parse Codex rollout JSONL into a conservative human-readable snapshot."""
+    """Parse Codex rollout JSONL into a conservative human-readable snapshot.
+
+    Codex persists overlapping event_msg and response_item records. TaskFSM reads
+    both because either surface may be reduced depending on the Codex runtime and
+    persistence mode. Unknown records are ignored rather than treated as state.
+    """
 
     def parse(self, path: str | Path) -> CodexSessionSnapshot:
         path = Path(path)
@@ -128,25 +179,51 @@ class CodexRolloutParser:
                 ts = _parse_ts(row.get('timestamp'))
                 if ts and (last_event_at is None or ts > last_event_at):
                     last_event_at = ts
-                row_type = row.get('type')
+                row_type = str(row.get('type') or '')
                 payload = row.get('payload') if isinstance(row.get('payload'), dict) else {}
 
                 if row_type == 'session_meta':
-                    session_id = str(payload.get('id') or session_id)
-                    cwd = str(payload.get('cwd') or cwd)
-                    source = str(payload.get('source') or source)
-                    metadata.update({k: v for k, v in payload.items() if k not in {'id', 'cwd'}})
+                    # Newer Codex uses SessionMetaLine { meta: {...}, git: {...} },
+                    # while older rollouts may expose id/cwd directly on payload.
+                    meta = payload.get('meta') if isinstance(payload.get('meta'), dict) else payload
+                    session_id = str(meta.get('id') or meta.get('session_id') or session_id)
+                    cwd = str(meta.get('cwd') or cwd)
+                    source_value = meta.get('source') or source
+                    source = str(source_value if not isinstance(source_value, dict) else source_value.get('type') or 'cli')
+                    metadata.update({k: v for k, v in meta.items() if k not in {'id', 'session_id', 'cwd'}})
+                    git = payload.get('git')
+                    if isinstance(git, dict):
+                        metadata['git'] = git
+                    continue
+
+                if row_type == 'response_item':
+                    item_type = str(payload.get('type') or '').lower()
+                    role = str(payload.get('role') or '').lower()
+                    if item_type == 'message' and role == 'user':
+                        message = _content_text(payload.get('content'))
+                        if message and not _looks_like_context(message) and not task_intent:
+                            task_intent = ' '.join(message.split())
+                        if message and not _looks_like_context(message):
+                            status = 'running'
+                        continue
+                    activity = _response_item_activity(payload)
+                    if activity:
+                        current_action = activity
                     continue
 
                 if row_type != 'event_msg':
                     continue
 
                 payload_type = str(payload.get('type') or '')
+                if payload_type in {'task_started', 'turn_started'}:
+                    status = 'running'
+                    continue
                 if payload_type == 'user_message':
                     message = str(payload.get('message') or '').strip()
-                    if message and not task_intent:
+                    if message and not _looks_like_context(message) and not task_intent:
                         task_intent = ' '.join(message.split())
-                    status = 'running'
+                    if message and not _looks_like_context(message):
+                        status = 'running'
                     continue
                 if payload_type == 'agent_message':
                     message = str(payload.get('message') or '').strip()
@@ -215,7 +292,7 @@ class CodexObserver:
             sessions_root = codex_home / 'sessions'
         self.sessions_root = Path(sessions_root).expanduser()
         self.active_window_seconds = max(10.0, float(
-            active_window_seconds if active_window_seconds is not None else os.getenv('TASKFSM_CODEX_ACTIVE_WINDOW', '300')
+            active_window_seconds if active_window_seconds is not None else os.getenv('TASKFSM_CODEX_ACTIVE_WINDOW', '900')
         ))
         self.parser = CodexRolloutParser()
         self._branch_cache: dict[str, str] = {}
