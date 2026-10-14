@@ -39,6 +39,37 @@ def test_parser_exposes_task_intent_workspace_and_human_activity(tmp_path):
     assert snap.plan == ['阅读导入代码', '修复字段映射', '运行测试']
 
 
+def test_parser_supports_current_codex_response_item_schema(tmp_path):
+    rollout = tmp_path / 'sessions/2026/10/14/rollout-demo-response-item.jsonl'
+    write_rows(rollout, [
+        {'timestamp':'2026-10-14T08:20:00Z','type':'session_meta','payload':{'id':'response-item-1','cwd':'/home/user/Project/ServerManager','source':'cli'}},
+        {'timestamp':'2026-10-14T08:20:01Z','type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'检查 ServerManager 的部署流程并修复启动错误'}]}},
+        {'timestamp':'2026-10-14T08:20:02Z','type':'response_item','payload':{'type':'message','role':'assistant','content':[{'type':'output_text','text':'我先检查启动脚本和服务配置。'}]}},
+        {'timestamp':'2026-10-14T08:20:03Z','type':'response_item','payload':{'type':'custom_tool_call','name':'exec','input':'pytest tests/test_server.py -q'}},
+    ])
+
+    snap = CodexRolloutParser().parse(rollout)
+
+    assert snap.task_intent == '检查 ServerManager 的部署流程并修复启动错误'
+    assert snap.title == '检查 ServerManager 的部署流程并修复启动错误'
+    assert snap.workspace_name == 'ServerManager'
+    assert snap.current_action == '正在执行工具：exec · pytest tests/test_server.py -q'
+
+
+def test_parser_ignores_environment_context_as_task_intent(tmp_path):
+    rollout = tmp_path / 'sessions/2026/10/14/rollout-demo-context.jsonl'
+    write_rows(rollout, [
+        {'timestamp':'2026-10-14T08:25:00Z','type':'session_meta','payload':{'id':'context-1','cwd':'/repo/demo','source':'cli'}},
+        {'timestamp':'2026-10-14T08:25:01Z','type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'<environment_context>\n<cwd>/repo/demo</cwd>\n<shell>bash</shell>\n</environment_context>'}]}},
+        {'timestamp':'2026-10-14T08:25:02Z','type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'重构任务状态投影逻辑'}]}},
+    ])
+
+    snap = CodexRolloutParser().parse(rollout)
+
+    assert snap.task_intent == '重构任务状态投影逻辑'
+    assert snap.title == '重构任务状态投影逻辑'
+
+
 def test_observer_marks_stale_session_ended_instead_of_running(tmp_path):
     rollout = tmp_path / 'sessions/2026/10/14/rollout-demo-stale-1.jsonl'
     write_rows(rollout, [
